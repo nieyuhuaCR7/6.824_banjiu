@@ -18,12 +18,31 @@ type ExampleArgs struct {
 	X int
 }
 
+// this rpc is for workers to get task from coordinator
+type GetTaskRequest struct {
+	Worker int
+	
+}
+
 type ExampleReply struct {
 	Y int
 }
 
-// Add your RPC definitions here.
+// this response is for coordinators to return task to the worker
+type GetTaskResponse struct {
+	Task *Task
+}
 
+// Add your RPC definitions here.
+// this request is for worker to tell the coordinator that it has finished
+// the task it was assigned to
+type TaskDoneOrNotRequest struct {
+	Task *Task
+}
+
+type TaskDoneOrNotReply struct {
+	// coordinator does not reply
+}
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
