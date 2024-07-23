@@ -1,0 +1,25 @@
+# Raft论文自我导读
+为了方便我随看随查，我决定在阅读raft论文的时候，写一点自己的感受
+
+## 5.1 Raft基本结构
+
+在任何一个时间点，一个raft server只有三种状态的可能： leader, candidate, follower. 正常情况下一个raft集群应该只有一个leader。follower的功能很简单，它们只根据leader和candidate的通信来作出应对。leader负责管理所有来自客户端的命令，并将这些命令分发给follower。candidate则只会在需要选举Leader的时候才会出现。不同状态之间的变化示意可以在论文的figure 4中看到
+
+raft中一个很重要的概念就是任期，term。每一个任期都会发起一次选举，试图从candidate中选出leader。在某些特殊的情况下，会产生split vote的情况，没有leader被选出来。这种情况一旦发生就会进入下一个任期，再进行一次新的选举。每一个raft server都会维护一个叫"currentTerm"的变量，这个变量单调递增。在不同的raft server进行相互通信的时候，它们会交流彼此的currentTerm，一旦遇到了比自己大的term，就将自己的term更新为那个更大的term。 这里需要注意的是，当一个candidate或者leader遇到了比自己大的任期，这个server立刻变回candidate模式。任何一个server遇到了比自己任期小的命令，都不会理会。这一点还是比较好理解的，毕竟不能用前朝的剑斩当今的官。
+
+raft server使用rpc来进行通信。一个candidate想要获得选票成为leader，就要发送RequestVote RPC；一个leader使用AppendEntries RPC来宣示主权，发送命令，直到自己宕机或者被新的任期取代。server定时发送这两种Rpc。目前我们主要关注这两种。
+
+## 5.2 Leader Election
+所有server在一开始被启用的时候都是以follower的模式，如果一个follower持续收到来自leader的heartbeat，AppendEntries RPC信息的时候，它就会一直安于现状做一个follower。如果经过一段时间后，这个follower仍然未收到AppendEntries RPC，那么它就会变成一个candidate,试图选自己成为下一个leader。这里我们将这个time out称为 election time out。
+
+这个follower在成为candidate的同时会将自己的currentTerm加1，并且将自己变为candidate状态。这个变化大概可以理解为，新的任期来了，大家都来选我，旧时代已经过去了。candidate同时会选自己，发出RequestVote RPC来募集选票。
+candidate会有三种可能： 
+1. 赢得选举
+2. 其他server成为Leader，这个candidate退回follower
+3. 一段时间后没有收到答复，继续选举
+   
+现在让我们分别来讨论这几种可能性
+1. candidate赢得了多数选票，成功当选leader。每一个任期中，每一个服务器只能遵循先到先得的原则来投一次票。一旦一个candidate获得多数选票成为leader，他将定期发送AppendEntries RPC来压制其他服务器。
+2. 在candidate等待选票的同时，如果它收到了来自其他服务器的AppendEntries RPC，它会比较彼此的currentTerm。如果这个leader的current Term大于等于candidate的任期，则转变为follower。如果小于，不予理会。
+3. 如果超时，candidate仍未获得多数选票，这个candidate则会进行新一轮选举。为了避免无限split vote分票的情况，每次超时时间都设置为150ms到300ms的随机数
+4. 

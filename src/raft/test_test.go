@@ -28,6 +28,7 @@ func TestInitialElection2A(t *testing.T) {
 
 	// is a leader elected?
 	cfg.checkOneLeader()
+	fmt.Printf("  ... Passed\n")
 
 	// sleep a bit to avoid racing with followers learning of the
 	// election, then check that all peers agree on the term.
@@ -99,7 +100,7 @@ func TestManyElections2A(t *testing.T) {
 
 	cfg.checkOneLeader()
 
-	iters := 10
+	iters := 100
 	for ii := 1; ii < iters; ii++ {
 		// disconnect three nodes
 		i1 := rand.Int() % servers
