@@ -194,6 +194,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// we can now vote for the candidate
 	reply.VoteGranted = true
 	rf.votedFor = args.CandidateId
+	rf.persistLocked()
 	rf.resetElectionTimerLocked()
 	// fmt.Printf("Server %d in term %d voted for Server %d in term %d\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 }

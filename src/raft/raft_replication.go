@@ -61,6 +61,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	
 	// after the prevLogIndex is matched, we can append the entries
 	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.persistLocked()
 	reply.Success = true
 	// fmt.Printf("Server %d in term %d appended entries from Server %d in term %d\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
     // TODO: handle LeaderCommit
