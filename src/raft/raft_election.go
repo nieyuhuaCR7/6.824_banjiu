@@ -2,6 +2,7 @@ package raft
 
 import (
 	// "fmt"
+	"fmt"
 	"math/rand"
 	"time"
 )
@@ -14,6 +15,16 @@ func (rf *Raft) resetElectionTimerLocked() {
 
 func (rf *Raft) isElectionTimeout() bool {
 	return time.Since(rf.electionStart) > rf.electionTimeout
+}
+
+// check whether this peer's last log is more up-to-date than the candidate's last log
+func (rf *Raft) isMoreUptoDateLocked(candidateIndex int, candidateTerm int) bool {
+	l := len(rf.log)
+	lastIndex, lastTerm := l - 1, rf.log[l-1].Term
+    if lastTerm != candidateTerm {
+		return lastTerm > candidateTerm
+	}
+	return lastIndex > candidateIndex
 }
 
 func (rf *Raft) electionTicker() {
@@ -81,7 +92,7 @@ func (rf *Raft) startElection(term int) {
 			if votes > len(rf.peers)/2 {
 				rf.becomeLeaderLocked()
 				// start the leader heartbeat
-				return
+				go rf.replicationTicker(term)
 			}
 		}
 	};
@@ -93,6 +104,7 @@ func (rf *Raft) startElection(term int) {
 		// fmt.Printf("Server %d context lost, not starting election\n", rf.me)
 		return
 	}
+	l := len(rf.log)
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			votes++
@@ -103,6 +115,8 @@ func (rf *Raft) startElection(term int) {
 		args := &RequestVoteArgs{
 			Term: rf.currentTerm,
 			CandidateId: rf.me,
+			LastLogIndex: l - 1,
+			LastLogTerm: rf.log[l-1].Term,
 		}
 
 		go askVoteFromPeer(peer, args)	
@@ -167,6 +181,13 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor != -1 && rf.votedFor != args.CandidateId {
 		reply.VoteGranted = false
 		// fmt.Printf("Server %d in term %d rejected vote request from Server %d in term %d, because it has already voted for Server %d\n", rf.me, rf.currentTerm, args.CandidateId, args.Term, rf.votedFor)
+		return
+	}
+
+	// check if the candidate's log is more up-to-date
+	if rf.isMoreUptoDateLocked(args.LastLogIndex, args.LastLogTerm) {
+		reply.VoteGranted = false
+		fmt.Printf("Server %d in term %d rejected vote request from Server %d in term %d, because of less up-to-date log\n", rf.me, rf.currentTerm, args.CandidateId, args.Term)
 		return
 	}
 

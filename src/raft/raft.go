@@ -19,6 +19,7 @@ package raft
 
 import (
 	//	"bytes"
+	"fmt"
 	"log"
 	"sync"
 	"sync/atomic"
@@ -26,6 +27,7 @@ import (
 
 	//	"6.5840/labgob"
 	"6.5840/labrpc"
+	// "github.com/tidwall/match"
 )
 
 type Role string
@@ -83,6 +85,16 @@ type Raft struct {
 	electionStart time.Time // time when election started
 	electionTimeout time.Duration // timeout for election
 
+	// 2B
+	log []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader
+    // these items are only used by leaders
+	nextIndex []int // for each server, index of the next log entry to send to that server	
+    matchIndex []int // for each server, index of highest log entry known to be replicated on server	
+    // fields for apply loop
+	commitIndex int // index of highest log entry known to be committed
+	lastApplied int // index of highest log entry applied to this peer's state machine
+	applyCh chan ApplyMsg // channel to send committed log entries to the state machine
+	applyCond *sync.Cond // condition variable to signal the apply loop
 }
 
 func (rf *Raft) becomeFollowerLocked(term int) {
@@ -112,6 +124,7 @@ func (rf *Raft) becomeCandidateLocked() {
 	}
 	rf.role = Candidate
 	rf.currentTerm++
+	// fmt.Printf("Server %d in term %d became candidate\n", rf.me, rf.currentTerm)
 	rf.votedFor = rf.me
 	// reset election timer
 	rf.resetElectionTimerLocked()
@@ -124,6 +137,11 @@ func (rf *Raft) becomeLeaderLocked() {
 		return
 	}
 	rf.role = Leader
+	// fmt.Printf("Server %d in term %d became leader\n", rf.me, rf.currentTerm)
+	for peer := 0; peer < len(rf.peers); peer++ {
+		rf.nextIndex[peer] = len(rf.log)
+		rf.matchIndex[peer] = 0
+	}
 	// reset election timer
 	rf.resetElectionTimerLocked()
 }
@@ -208,14 +226,21 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// Your code here (2B).
+    if rf.role != Leader {
+		return 0, 0, false
+	}
+	rf.log = append(rf.log, LogEntry{
+		CommandValid: true,
+		Command: command,
+		Term: rf.currentTerm,
+	})
+	// fmt.Printf("Server %d in term %d started command %v\n", rf.me, rf.currentTerm, command)
+	// fmt.Printf("this command is at index %d\n", len(rf.log) - 1)
 
-
-	return index, term, isLeader
+	return len(rf.log) - 1, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -258,13 +283,24 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.role = Follower
 	rf.currentTerm = 0
 	rf.votedFor = -1
+	// 2B
+	rf.log = append(rf.log, LogEntry{}) // a dummy entry for each server to avoid corner cases
+	rf.nextIndex = make([]int, len(rf.peers))
+	rf.matchIndex = make([]int, len(rf.peers))
+	// 2B: apply channel
+	rf.applyCh = applyCh
+	rf.applyCond = sync.NewCond(&rf.mu)
+	rf.commitIndex = 0
+	rf.lastApplied = 0
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	fmt.Printf("Server %d in term %d started\n", rf.me, rf.currentTerm)
 
 	// start ticker goroutine to start elections
 	go rf.electionTicker()
-
+    // start ticker goroutine to apply
+	go rf.applicationTicker()
 
 	return rf
 }
