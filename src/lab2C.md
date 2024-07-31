@@ -1,6 +1,6 @@
 # lab2C
 
-完成lab2C的日志同步功能后，我们来看状态持久化的部分
+完成lab2B的日志同步功能后，我们来看状态持久化的部分
 
 实验框架提供了一个persister.go的文件，为我们提供了一个persister的结构体，可以存储和读取状态值。Persister结构体包含一个互斥锁，一个字节切片用于保存raft的状态，一个字节切片保存kv服务器的快照。我们主要会用到ReadRaftState()和Save(raftstate []byte, snapshot []byte) 这两个函数。ReadRaftState()可以理解为从磁盘上读出一个raft的字节数组，而Save可以理解为把bytes形式的raft状态写入磁盘中。测试框架在调用raft.Make()时会提供一个Persister。题目要求我们完成raft.go里面的persist()和readPersist()方法，我们同样需要将raft的状态序列化为字节数组，序列化的方法已经给我们了，在labgob.go中。raft.go中也给了我们示例代码
 encoding:
