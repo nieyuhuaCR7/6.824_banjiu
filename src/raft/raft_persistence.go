@@ -27,10 +27,12 @@ func (rf *Raft) persistLocked() {
 	e := labgob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	// e.Encode(rf.log)
+	rf.log.persist(e)
 	raftstate := w.Bytes()
 	// TODO: add the snapshot for part 2D
-	rf.persister.Save(raftstate, nil)
+	// DONE
+	rf.persister.Save(raftstate, rf.log.snapshot)
 }
 
 
@@ -56,7 +58,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var currentTerm int
 	var votedFor int
-	var log []LogEntry
+	// var log RaftLog
 	if err := d.Decode(&currentTerm); err != nil {
 		fmt.Printf("Server %d failed to decode currentTerm\n", rf.me)
 		return
@@ -67,10 +69,15 @@ func (rf *Raft) readPersist(data []byte) {
 		return
 	}
 	rf.votedFor = votedFor
-	if err := d.Decode(&log); err != nil {
+	if err := rf.log.readPersist(d); err != nil {
 		fmt.Printf("Server %d failed to decode log\n", rf.me)
 		return
 	}
-	rf.log = log
-    fmt.Printf("Server %d successfully readPersist, currentTerm: %d, votedFor: %d, log length: %d\n", rf.me, rf.currentTerm, rf.votedFor, len(rf.log))
+	rf.log.snapshot = rf.persister.ReadSnapshot()
+
+	if rf.log.snapLastIdx > rf.commitIndex {
+		rf.commitIndex = rf.log.snapLastIdx
+	    rf.lastApplied = rf.log.snapLastIdx
+	}
+    fmt.Printf("Server %d successfully readPersist, currentTerm: %d, votedFor: %d, log length: %d\n", rf.me, rf.currentTerm, rf.votedFor, rf.log.size())
 }

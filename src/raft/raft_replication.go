@@ -49,18 +49,19 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	}
 
 	// return failure if prevLog not matched
-	if args.PrevLogIndex >= len(rf.log) {
+	if args.PrevLogIndex >= rf.log.size() {
 		// fmt.Printf("Server %d in term %d rejected append entries from Server %d in term %d, because of prevLogIndex out of bound\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 	    return
 	}
-	if rf.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+	if rf.log.at(args.PrevLogIndex).Term != args.PrevLogTerm {
 		// fmt.Printf("Server %d in term %d rejected append entries from Server %d in term %d, because of prevLogTerm mismatch\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 		return
 	}
 	// fmt.Printf("Server %d in term %d received append entries from Server %d in term %d\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 	
 	// after the prevLogIndex is matched, we can append the entries
-	rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	// rf.log = append(rf.log[:args.PrevLogIndex+1], args.Entries...)
+	rf.log.appendFrom(args.PrevLogIndex, args.Entries)
 	rf.persistLocked()
 	reply.Success = true
 	// fmt.Printf("Server %d in term %d appended entries from Server %d in term %d\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
@@ -117,11 +118,17 @@ func (rf *Raft) startReplication(term int) bool {
 		if !reply.Success {
 			// go back a term
 			idx := rf.nextIndex[peer] - 1
-			term := rf.log[idx].Term
-			for idx > 0 && rf.log[idx].Term == term {
+			term := rf.log.at(idx).Term
+			for idx >= rf.log.snapLastIdx && rf.log.at(idx).Term == term {
 				idx--
 			}
 			rf.nextIndex[peer] = idx + 1
+			nextPrevIdx := rf.nextIndex[peer] - 1
+			nextPrevTerm := InvalidTerm
+			if nextPrevIdx >= rf.log.snapLastIdx {
+					nextPrevTerm = rf.log.at(nextPrevIdx).Term
+			}
+			fmt.Printf("Server %d in term %d rejected append entries from Server %d in term %d, because of prevLogTerm mismatch\n", rf.me, rf.currentTerm, peer, nextPrevTerm)
 			// fmt.Printf("Server %d nextIndex to server %d is %d\n", rf.me, peer, rf.nextIndex[peer])
 		    return
 		}
@@ -132,7 +139,7 @@ func (rf *Raft) startReplication(term int) bool {
 
 		// TODO: handle commitIndex
 		majorityMatched := rf.getMajorityIndexLocked()
-		if majorityMatched > rf.commitIndex && rf.log[majorityMatched].Term == rf.currentTerm {
+		if majorityMatched > rf.commitIndex && rf.log.at(majorityMatched).Term == rf.currentTerm {
 			rf.commitIndex = majorityMatched
 			rf.applyCond.Signal()
 		}
@@ -148,19 +155,32 @@ func (rf *Raft) startReplication(term int) bool {
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			// for leader, the match point is always the last log entry
-			rf.matchIndex[peer] = len(rf.log) - 1
-			rf.nextIndex[peer] = len(rf.log)
+			rf.matchIndex[peer] = rf.log.size() - 1
+			rf.nextIndex[peer] = rf.log.size()
 			continue
 		}
 		prevIdx := rf.nextIndex[peer] - 1
-		prevTerm := rf.log[prevIdx].Term	
+		if prevIdx < rf.log.snapLastIdx {
+			// send InstallSnapshot RPC
+			args := &InstallSnapshotArgs{
+				Term: rf.currentTerm,
+				LeaderId: rf.me,
+				LastIncludedIndex: rf.log.snapLastIdx,
+				LastIncludedTerm: rf.log.snapLastTerm,
+				Snapshot: rf.log.snapshot,
+			}
+			fmt.Printf("Server %d in term %d sending install snapshot to Server %d\n", rf.me, rf.currentTerm, peer)
+		    go rf.installOnPeer(peer, term, args)
+			continue
+		}
+		prevTerm := rf.log.at(prevIdx).Term	
 		// construct the append entries args
 		args := &AppendEntriesArgs{
 			Term: rf.currentTerm,
 			LeaderId: rf.me,
 			PrevLogIndex: prevIdx,
 			PrevLogTerm: prevTerm,
-			Entries: rf.log[prevIdx+1:],
+			Entries: rf.log.tail(prevIdx + 1),
 			LeaderCommit: rf.commitIndex,
 		}
 		// fmt.Printf("Server %d in term %d sending append entries to Server %d\n", rf.me, rf.currentTerm, peer)

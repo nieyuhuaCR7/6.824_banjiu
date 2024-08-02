@@ -39,3 +39,17 @@ type AppendEntriesReply struct {
 	Term int
 	Success bool
 }
+
+type InstallSnapshotArgs struct {
+	Term int
+	LeaderId int
+
+	LastIncludedIndex int
+	LastIncludedTerm int
+	
+	Snapshot []byte
+}
+
+type InstallSnapshotReply struct {
+	Term int
+}

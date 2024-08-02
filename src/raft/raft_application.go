@@ -1,31 +1,57 @@
 package raft
 
 // import "fmt"
-
-
 func (rf *Raft) applicationTicker() {
-	for rf.killed() == false {
-		// Your code here (2B)
+	for !rf.killed() {
 		rf.mu.Lock()
 		rf.applyCond.Wait()
-		
-        entries := make([]LogEntry, 0)
-		for i := rf.lastApplied + 1; i <= rf.commitIndex; i++ {
-			entries = append(entries, rf.log[i])
+		entries := make([]LogEntry, 0)
+		snapPendingApply := rf.snapPending
+
+		if !snapPendingApply {
+			if rf.lastApplied < rf.log.snapLastIdx {
+				rf.lastApplied = rf.log.snapLastIdx
+			}
+
+			// make sure that the rf.log have all the entries
+			start := rf.lastApplied + 1
+			end := rf.commitIndex
+			if end >= rf.log.size() {
+				end = rf.log.size() - 1
+			}
+			for i := start; i <= end; i++ {
+				entries = append(entries, rf.log.at(i))
+			}
 		}
 		rf.mu.Unlock()
 
-		for i, entry := range entries {
+		if !snapPendingApply {
+			for i, entry := range entries {
+				rf.applyCh <- ApplyMsg{
+					CommandValid: entry.CommandValid,
+					Command:      entry.Command,
+					CommandIndex: rf.lastApplied + 1 + i, // must be cautious
+				}
+			}
+		} else {
 			rf.applyCh <- ApplyMsg{
-				CommandValid: entry.CommandValid,
-				Command:      entry.Command,
-				CommandIndex: rf.lastApplied + 1 + i,
+				SnapshotValid: true,
+				Snapshot:      rf.log.snapshot,
+				SnapshotIndex: rf.log.snapLastIdx,
+				SnapshotTerm:  rf.log.snapLastTerm,
 			}
 		}
 
 		rf.mu.Lock()
-		// fmt.Printf("Server %d applied %d entries\n", rf.me, len(entries))
-		rf.lastApplied += len(entries)
+		if !snapPendingApply {
+			rf.lastApplied += len(entries)
+		} else {
+			rf.lastApplied = rf.log.snapLastIdx
+			if rf.commitIndex < rf.lastApplied {
+				rf.commitIndex = rf.lastApplied
+			}
+			rf.snapPending = false
+		}
 		rf.mu.Unlock()
 	}
 }

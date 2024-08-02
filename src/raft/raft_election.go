@@ -19,8 +19,8 @@ func (rf *Raft) isElectionTimeout() bool {
 
 // check whether this peer's last log is more up-to-date than the candidate's last log
 func (rf *Raft) isMoreUptoDateLocked(candidateIndex int, candidateTerm int) bool {
-	l := len(rf.log)
-	lastIndex, lastTerm := l - 1, rf.log[l-1].Term
+	// l := rf.log.size()
+	lastIndex, lastTerm := rf.log.last()
     if lastTerm != candidateTerm {
 		return lastTerm > candidateTerm
 	}
@@ -104,7 +104,8 @@ func (rf *Raft) startElection(term int) {
 		// fmt.Printf("Server %d context lost, not starting election\n", rf.me)
 		return
 	}
-	l := len(rf.log)
+	// l := len(rf.log)
+	lastIdx, lastTerm := rf.log.last()
 	for peer := 0; peer < len(rf.peers); peer++ {
 		if peer == rf.me {
 			votes++
@@ -115,8 +116,8 @@ func (rf *Raft) startElection(term int) {
 		args := &RequestVoteArgs{
 			Term: rf.currentTerm,
 			CandidateId: rf.me,
-			LastLogIndex: l - 1,
-			LastLogTerm: rf.log[l-1].Term,
+			LastLogIndex: lastIdx,
+			LastLogTerm: lastTerm,
 		}
 
 		go askVoteFromPeer(peer, args)	

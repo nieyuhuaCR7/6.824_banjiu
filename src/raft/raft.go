@@ -32,6 +32,11 @@ import (
 	// "github.com/tidwall/match"
 )
 
+const (
+	InvalidTerm  int = 0
+	InvalidIndex int = 0
+)
+
 type Role string
 
 const (
@@ -88,8 +93,9 @@ type Raft struct {
 	electionTimeout time.Duration // timeout for election
 
 	// 2B
-	log []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader
-    // these items are only used by leaders
+	// log []LogEntry // log entries; each entry contains command for state machine, and term when entry was received by leader
+    log *RaftLog // 2D
+	// these items are only used by leaders
 	nextIndex []int // for each server, index of the next log entry to send to that server	
     matchIndex []int // for each server, index of highest log entry known to be replicated on server	
     // fields for apply loop
@@ -97,6 +103,9 @@ type Raft struct {
 	lastApplied int // index of highest log entry applied to this peer's state machine
 	applyCh chan ApplyMsg // channel to send committed log entries to the state machine
 	applyCond *sync.Cond // condition variable to signal the apply loop
+
+	// 2D
+	snapPending bool
 }
 
 func (rf *Raft) becomeFollowerLocked(term int) {
@@ -146,7 +155,7 @@ func (rf *Raft) becomeLeaderLocked() {
 	rf.role = Leader
 	// fmt.Printf("Server %d in term %d became leader\n", rf.me, rf.currentTerm)
 	for peer := 0; peer < len(rf.peers); peer++ {
-		rf.nextIndex[peer] = len(rf.log)
+		rf.nextIndex[peer] = rf.log.size()
 		rf.matchIndex[peer] = 0
 	}
 	// reset election timer
@@ -171,16 +180,6 @@ func (rf *Raft) GetState() (int, bool) {
 }
 
 
-// the service says it has created a snapshot that has
-// all info up to and including index. this means the
-// service no longer needs the log through (and including)
-// that index. Raft should now trim its log as much as possible.
-func (rf *Raft) Snapshot(index int, snapshot []byte) {
-	// Your code here (2D).
-
-}
-
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -200,7 +199,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
     if rf.role != Leader {
 		return 0, 0, false
 	}
-	rf.log = append(rf.log, LogEntry{
+	rf.log.append(LogEntry{
 		CommandValid: true,
 		Command: command,
 		Term: rf.currentTerm,
@@ -209,7 +208,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// fmt.Printf("Server %d in term %d started command %v\n", rf.me, rf.currentTerm, command)
 	// fmt.Printf("this command is at index %d\n", len(rf.log) - 1)
 
-	return len(rf.log) - 1, rf.currentTerm, true
+	return rf.log.size() - 1, rf.currentTerm, true
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -253,7 +252,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.currentTerm = 0
 	rf.votedFor = -1
 	// 2B
-	rf.log = append(rf.log, LogEntry{}) // a dummy entry for each server to avoid corner cases
+	// rf.log = append(rf.log, LogEntry{}) // a dummy entry for each server to avoid corner cases
+	rf.log = NewLog(InvalidIndex, InvalidTerm, nil, nil)
 	rf.nextIndex = make([]int, len(rf.peers))
 	rf.matchIndex = make([]int, len(rf.peers))
 	// 2B: apply channel
@@ -261,6 +261,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCond = sync.NewCond(&rf.mu)
 	rf.commitIndex = 0
 	rf.lastApplied = 0
+
+	// 2D
+	rf.snapPending = false
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
