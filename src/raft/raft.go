@@ -48,7 +48,7 @@ const (
 const (
 	electionTimeoutLowerBound time.Duration = 250 * time.Millisecond
 	electionTimeoutUpperBound time.Duration = 400 * time.Millisecond
-	replicationInterval time.Duration = 70 * time.Millisecond
+	replicationInterval time.Duration = 30 * time.Millisecond
 )
 
 

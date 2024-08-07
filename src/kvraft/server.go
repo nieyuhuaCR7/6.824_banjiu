@@ -1,29 +1,17 @@
 package kvraft
 
 import (
+	"time"
+
 	"6.5840/labgob"
 	"6.5840/labrpc"
 	"6.5840/raft"
-	"log"
+
+	// "log"
 	"sync"
 	"sync/atomic"
 )
 
-const Debug = false
-
-func DPrintf(format string, a ...interface{}) (n int, err error) {
-	if Debug {
-		log.Printf(format, a...)
-	}
-	return
-}
-
-
-type Op struct {
-	// Your definitions here.
-	// Field names must start with capital letters,
-	// otherwise RPC will break.
-}
 
 type KVServer struct {
 	mu      sync.Mutex
@@ -35,15 +23,91 @@ type KVServer struct {
 	maxraftstate int // snapshot if log grows this big
 
 	// Your definitions here.
+	stateMachine *MemoryKVStateMachine
+	lastApplied int
+	notifyChans map[int]chan *OpReply
+	duplicateTable map[int64]LastOperationInfo
 }
 
-
+// this function is used when a client sends a Get request to the server
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 	// Your code here.
+	// use kv.rf.Start() to start a new Raft agreement
+	index, _, isLeader := kv.rf.Start(Op{Key: args.Key, OpType: OpGet})
+	// if not leader, let the client retry
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// wait for the result // TODO
+	kv.mu.Lock()
+	notifyCh := kv.getNotifyChannel(index)
+	kv.mu.Unlock()
+
+	select {
+	case result := <-notifyCh:
+		reply.Value = result.Value
+		reply.Err = result.Err
+	case <-time.After(ClientRequestTimeout):
+		reply.Err = ErrTimeout
+	}
+
+	go func ()  {
+		kv.mu.Lock()
+		kv.removeNotifyChannel(index)
+		kv.mu.Unlock()
+	}()
+}
+
+func (kv *KVServer) requestDuplicate(clientId int64, seqId int64) bool {
+	lastOp, ok := kv.duplicateTable[clientId]
+	return ok && seqId <= lastOp.SeqId
 }
 
 func (kv *KVServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) {
 	// Your code here.
+	// before we process this command, we have to tell if we have processed it before
+	kv.mu.Lock()
+	if kv.requestDuplicate(args.ClientId, args.SeqId) {
+		// if this request is duplicate, we can return the result directly
+		opReply := kv.duplicateTable[args.ClientId].Reply
+		reply.Err = opReply.Err
+		kv.mu.Unlock()
+		return
+	}
+	kv.mu.Unlock()
+	index, _, isLeader := kv.rf.Start(Op{
+		Key: args.Key, 
+		Value: args.Value, 
+		OpType: getOperationType(args.Op),
+		ClientId: args.ClientId,
+		SeqId: args.SeqId,
+	})
+
+	// if not leader, let the client retry
+	if !isLeader {
+		reply.Err = ErrWrongLeader
+		return
+	}
+
+	// wait for the result
+	kv.mu.Lock()
+	notifyCh := kv.getNotifyChannel(index)
+	kv.mu.Unlock()
+
+	select {
+	case result := <-notifyCh:
+		reply.Err = result.Err
+	case <-time.After(ClientRequestTimeout):
+		reply.Err = ErrTimeout
+	}
+
+	go func ()  {
+		kv.mu.Lock()
+		kv.removeNotifyChannel(index)
+		kv.mu.Unlock()
+	}()
 }
 
 // the tester calls Kill() when a KVServer instance won't
@@ -92,6 +156,84 @@ func StartKVServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persiste
 	kv.rf = raft.Make(servers, me, persister, kv.applyCh)
 
 	// You may need initialization code here.
+	kv.lastApplied = 0
+	kv.dead = 0
+	kv.stateMachine = NewMemoryKVStateMachine()
+	kv.notifyChans = make(map[int]chan *OpReply)
+	kv.duplicateTable = make(map[int64]LastOperationInfo)
 
+	go kv.applyTask()
 	return kv
+}
+
+// process the message from raft layer in the applyCh channel
+func (kv *KVServer) applyTask() {
+	for !kv.killed() {
+		select {
+		case message := <-kv.applyCh:
+			if message.CommandValid {
+				kv.mu.Lock()
+				// if this command has been applied before, skip it
+				if message.CommandIndex <= kv.lastApplied {
+					kv.mu.Unlock()
+					continue
+				}
+
+				kv.lastApplied = message.CommandIndex
+
+				// retrieve the command from the message
+				op := message.Command.(Op)
+				var opReply *OpReply
+				if op.OpType != OpGet && kv.requestDuplicate(op.ClientId, op.SeqId) {
+					opReply = kv.duplicateTable[op.ClientId].Reply
+				} else {
+					// apply the command to the kv state machine
+					opReply = kv.applyToStateMachine(op)
+					if op.OpType != OpGet {
+						kv.duplicateTable[op.ClientId] = LastOperationInfo{
+							SeqId: op.SeqId,
+							Reply: opReply,
+						}
+					}
+				}
+				// opReply = kv.applyToStateMachine(op)
+
+				// when we get the result, we pass it to the client
+                if _, isLeader := kv.rf.GetState(); isLeader {
+					notifyCh := kv.getNotifyChannel(message.CommandIndex)
+					notifyCh <- opReply
+				}
+				kv.mu.Unlock()
+
+			} 
+		}
+	}
+}
+
+func (kv *KVServer) applyToStateMachine(op Op) *OpReply {
+	var value string
+	var err Err
+	switch op.OpType {
+	case OpGet:
+		value, err = kv.stateMachine.Get(op.Key)
+	case OpPut:
+		err = kv.stateMachine.Put(op.Key, op.Value)
+	case OpAppend:
+		err = kv.stateMachine.Append(op.Key, op.Value)
+	}
+	return &OpReply{
+		Value: value,
+		Err: err,
+	}
+}
+
+func (kv *KVServer) getNotifyChannel(index int) chan *OpReply {
+	if _, ok := kv.notifyChans[index]; !ok {
+		kv.notifyChans[index] = make(chan *OpReply, 1)
+	}
+	return kv.notifyChans[index]
+}
+
+func (kv *KVServer) removeNotifyChannel(index int) {
+	delete(kv.notifyChans, index)
 }
