@@ -53,8 +53,16 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		// fmt.Printf("Server %d in term %d rejected append entries from Server %d in term %d, because of prevLogIndex out of bound\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 	    return
 	}
+	// // print the start and the end of the server's log
+	// fmt.Printf("Server %d log start: %v\n", rf.me, rf.log.at(0))
+	// fmt.Printf("Server %d log end: %v\n", rf.me, rf.log.at(rf.log.size() - 1))
+	// print the args's prevLogIndex and prevLogTerm
+	// fmt.Printf("Server %d in term %d received append entries from Server %d in term %d, prevLogIndex: %d, prevLogTerm: %d\n", rf.me, rf.currentTerm, args.LeaderId, args.Term, args.PrevLogIndex, args.PrevLogTerm)
+	if args.PrevLogIndex < rf.log.snapLastIdx {
+		return
+	}
 	if rf.log.at(args.PrevLogIndex).Term != args.PrevLogTerm {
-		// fmt.Printf("Server %d in term %d rejected append entries from Server %d in term %d, because of prevLogTerm mismatch\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
+		fmt.Printf("Server %d in term %d rejected append entries from Server %d in term %d, because of prevLogTerm mismatch\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
 		return
 	}
 	// fmt.Printf("Server %d in term %d received append entries from Server %d in term %d\n", rf.me, rf.currentTerm, args.LeaderId, args.Term)
@@ -118,6 +126,12 @@ func (rf *Raft) startReplication(term int) bool {
 		if !reply.Success {
 			// go back a term
 			idx := rf.nextIndex[peer] - 1
+			// avoid the snapshotted entries, which are not in the log
+			if idx < rf.log.snapLastIdx {
+				rf.nextIndex[peer] = rf.log.snapLastIdx + 1
+				// fmt.Printf("Server %d nextIndex to server %d is %d\n", rf.me, peer, rf.nextIndex[peer])
+				return
+			}
 			term := rf.log.at(idx).Term
 			for idx >= rf.log.snapLastIdx && rf.log.at(idx).Term == term {
 				idx--
@@ -169,7 +183,7 @@ func (rf *Raft) startReplication(term int) bool {
 				LastIncludedTerm: rf.log.snapLastTerm,
 				Snapshot: rf.log.snapshot,
 			}
-			fmt.Printf("Server %d in term %d sending install snapshot to Server %d\n", rf.me, rf.currentTerm, peer)
+			// fmt.Printf("Server %d in term %d sending install snapshot to Server %d\n", rf.me, rf.currentTerm, peer)
 		    go rf.installOnPeer(peer, term, args)
 			continue
 		}
