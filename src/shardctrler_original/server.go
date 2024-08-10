@@ -1,44 +1,48 @@
 package shardctrler
 
 import (
-	"6.5840/labgob"
-	"6.5840/labrpc"
-	"6.5840/raft"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"6.5840/labgob"
+	"6.5840/labrpc"
+	"6.5840/raft"
 )
+
 
 type ShardCtrler struct {
 	mu      sync.Mutex
 	me      int
 	rf      *raft.Raft
 	applyCh chan raft.ApplyMsg
-
+    dead int32 // set by Kill()
 	// Your data here.
 
 	configs []Config // indexed by config num
 
-	dead           int32 // set by Kill()
-	lastApplied    int
-	stateMachine   *CtrlerStateMachine
-	notifyChans    map[int]chan *OpReply
+	stateMachine *CtrlerStateMachine
+	lastApplied int
+	notifyChans map[int]chan *OpReply
 	duplicateTable map[int64]LastOperationInfo
 }
 
-func (sc *ShardCtrler) requestDuplicated(clientId, seqId int64) bool {
-	info, ok := sc.duplicateTable[clientId]
-	return ok && seqId <= info.SeqId
-}
+
+// type Op struct {
+// 	// Your data here.
+// }
+
 
 func (sc *ShardCtrler) Join(args *JoinArgs, reply *JoinReply) {
 	// Your code here.
+	fmt.Printf("ShardCtrler %d Join: %v\n", sc.me, args)
 	var opReply OpReply
 	sc.command(Op{
-		OpType:   OpJoin,
+		OpType: OpJoin,
 		ClientId: args.ClientId,
-		SeqId:    args.SeqId,
-		Servers:  args.Servers,
+		SeqId: args.SeqId,
+		Servers: args.Servers,
 	}, &opReply)
 
 	reply.Err = opReply.Err
@@ -48,10 +52,10 @@ func (sc *ShardCtrler) Leave(args *LeaveArgs, reply *LeaveReply) {
 	// Your code here.
 	var opReply OpReply
 	sc.command(Op{
-		OpType:   OpLeave,
+		OpType: OpLeave,
 		ClientId: args.ClientId,
-		SeqId:    args.SeqId,
-		GIDs:     args.GIDs,
+		SeqId: args.SeqId,
+		GIDs: args.GIDs,
 	}, &opReply)
 
 	reply.Err = opReply.Err
@@ -61,11 +65,11 @@ func (sc *ShardCtrler) Move(args *MoveArgs, reply *MoveReply) {
 	// Your code here.
 	var opReply OpReply
 	sc.command(Op{
-		OpType:   OpMove,
+		OpType: OpMove,
 		ClientId: args.ClientId,
-		SeqId:    args.SeqId,
-		Shard:    args.Shard,
-		GID:      args.GID,
+		SeqId: args.SeqId,
+		Shard: args.Shard,
+		GID: args.GID,
 	}, &opReply)
 
 	reply.Err = opReply.Err
@@ -76,7 +80,7 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 	var opReply OpReply
 	sc.command(Op{
 		OpType: OpQuery,
-		Num:    args.Num,
+		Num: args.Num,
 	}, &opReply)
 
 	reply.Config = opReply.ControllerConfig
@@ -84,9 +88,13 @@ func (sc *ShardCtrler) Query(args *QueryArgs, reply *QueryReply) {
 }
 
 func (sc *ShardCtrler) command(args Op, reply *OpReply) {
+	// before we process this command, we have to tell if we have processed it before
+	fmt.Printf("Command: Received operation %v with ClientId=%d, SeqId=%d\n", args.OpType, args.ClientId, args.SeqId)
 	sc.mu.Lock()
+	// we only check the duplication for non-query operations
 	if args.OpType != OpQuery && sc.requestDuplicated(args.ClientId, args.SeqId) {
-		// 如果是重复请求，直接返回结果
+		// if this request is duplicate, we can return the result directly
+		fmt.Printf("Command: Duplicate request detected for ClientId=%d, SeqId=%d\n", args.ClientId, args.SeqId)
 		opReply := sc.duplicateTable[args.ClientId].Reply
 		reply.Err = opReply.Err
 		sc.mu.Unlock()
@@ -94,28 +102,33 @@ func (sc *ShardCtrler) command(args Op, reply *OpReply) {
 	}
 	sc.mu.Unlock()
 
-	// 调用 raft，将请求存储到 raft 日志中并进行同步
 	index, _, isLeader := sc.rf.Start(args)
-	// 如果不是 Leader 的话，直接返回错误
 	if !isLeader {
+		// fmt.Printf("Command: Not the leader, cannot process operation %v\n", args.OpType)
 		reply.Err = ErrWrongLeader
 		return
 	}
 
-	// 等待结果
+	// fmt.Printf("Command: Operation %v started with index %d\n", args.OpType, index)
+
+	// fmt.Printf("every thing is ok until here\n")
 	sc.mu.Lock()
 	notifyCh := sc.getNotifyChannel(index)
 	sc.mu.Unlock()
 
+	// fmt.Printf("Command: Waiting for operation %v to complete with index %d\n", args.OpType, index)
 	select {
 	case result := <-notifyCh:
 		reply.ControllerConfig = result.ControllerConfig
 		reply.Err = result.Err
+		// fmt.Printf("Command: Operation %v completed with index %d, Err=%v\n", args.OpType, index, result.Err)
 	case <-time.After(ClientRequestTimeout):
 		reply.Err = ErrTimeout
+		// fmt.Printf("Command: Operation %v timed out with index %d\n", args.OpType, index)
+
 	}
 
-	// 删除通知的 channel
+	// remove the notify channel
 	go func() {
 		sc.mu.Lock()
 		sc.removeNotifyChannel(index)
@@ -123,7 +136,8 @@ func (sc *ShardCtrler) command(args Op, reply *OpReply) {
 	}()
 }
 
-// Kill the tester calls Kill() when a ShardCtrler instance won't
+
+// the tester calls Kill() when a ShardCtrler instance won't
 // be needed again. you are not required to do anything
 // in Kill(), but it might be convenient to (for example)
 // turn off debug output from this instance.
@@ -138,12 +152,12 @@ func (sc *ShardCtrler) killed() bool {
 	return z == 1
 }
 
-// Raft needed by shardkv tester
+// needed by shardkv tester
 func (sc *ShardCtrler) Raft() *raft.Raft {
 	return sc.rf
 }
 
-// StartServer servers[] contains the ports of the set of
+// servers[] contains the ports of the set of
 // servers that will cooperate via Raft to
 // form the fault-tolerant shardctrler service.
 // me is the index of the current server in servers[].
@@ -159,9 +173,9 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	sc.rf = raft.Make(servers, me, persister, sc.applyCh)
 
 	// Your code here.
-	sc.dead = 0
 	sc.lastApplied = 0
-	sc.stateMachine = NewCtrlerStateMachine()
+	sc.dead = 0
+	sc.stateMachine = NewCtrlerStateMachine() 
 	sc.notifyChans = make(map[int]chan *OpReply)
 	sc.duplicateTable = make(map[int64]LastOperationInfo)
 
@@ -169,29 +183,31 @@ func StartServer(servers []*labrpc.ClientEnd, me int, persister *raft.Persister)
 	return sc
 }
 
-// 处理 apply 任务
 func (sc *ShardCtrler) applyTask() {
 	for !sc.killed() {
 		select {
 		case message := <-sc.applyCh:
 			if message.CommandValid {
 				sc.mu.Lock()
-				// 如果是已经处理过的消息则直接忽略
+				fmt.Printf("ShardCtrler %d: Processing command at index %d\n", sc.me, message.CommandIndex)
+				// if this message has been processed, just ignore it
 				if message.CommandIndex <= sc.lastApplied {
 					sc.mu.Unlock()
 					continue
 				}
 				sc.lastApplied = message.CommandIndex
 
-				// 取出用户的操作信息
+				// retrieve the operation
 				op := message.Command.(Op)
 				var opReply *OpReply
 				if op.OpType != OpQuery && sc.requestDuplicated(op.ClientId, op.SeqId) {
 					opReply = sc.duplicateTable[op.ClientId].Reply
 				} else {
-					// 将操作应用状态机中
+					// apply the command to the kv state machine
+					fmt.Printf("ShardCtrler %d: Applying operation %v\n", sc.me, op.OpType)
 					opReply = sc.applyToStateMachine(op)
 					if op.OpType != OpQuery {
+						fmt.Printf("ShardCtrler %d: Recording operation %v for ClientId=%d and SeqId=%d\n", sc.me, op.OpType, op.ClientId, op.SeqId)
 						sc.duplicateTable[op.ClientId] = LastOperationInfo{
 							SeqId: op.SeqId,
 							Reply: opReply,
@@ -199,7 +215,8 @@ func (sc *ShardCtrler) applyTask() {
 					}
 				}
 
-				// 将结果发送回去
+				// notify the client
+				fmt.Printf("ShardCtrler %d applyTask: notify client\n", sc.me)
 				if _, isLeader := sc.rf.GetState(); isLeader {
 					notifyCh := sc.getNotifyChannel(message.CommandIndex)
 					notifyCh <- opReply
@@ -211,20 +228,29 @@ func (sc *ShardCtrler) applyTask() {
 	}
 }
 
+func (sc *ShardCtrler) requestDuplicated(clientId int64, seqId int64) bool {
+	info, ok := sc.duplicateTable[clientId]
+	return ok && seqId <= info.SeqId
+} 
+
 func (sc *ShardCtrler) applyToStateMachine(op Op) *OpReply {
-	var err Err
 	var cfg Config
+	var err Err
 	switch op.OpType {
 	case OpQuery:
 		cfg, err = sc.stateMachine.Query(op.Num)
 	case OpJoin:
+		fmt.Printf("ShardCtrler StateMachine %d: Joining servers %v\n", sc.me, op.Servers)
 		err = sc.stateMachine.Join(op.Servers)
 	case OpLeave:
 		err = sc.stateMachine.Leave(op.GIDs)
 	case OpMove:
 		err = sc.stateMachine.Move(op.Shard, op.GID)
 	}
-	return &OpReply{ControllerConfig: cfg, Err: err}
+	return &OpReply{
+		ControllerConfig: cfg,
+		Err: err,
+	}
 }
 
 func (sc *ShardCtrler) getNotifyChannel(index int) chan *OpReply {

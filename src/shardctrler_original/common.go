@@ -22,10 +22,10 @@ import (
 // You will need to add fields to the RPC argument structs.
 //
 
-// NShards The number of shards.
+// The number of shards.
 const NShards = 10
 
-// Config A configuration -- an assignment of shards to groups.
+// A configuration -- an assignment of shards to groups.
 // Please don't change this.
 type Config struct {
 	Num    int              // config number
@@ -49,9 +49,9 @@ const (
 type Err string
 
 type JoinArgs struct {
-	Servers  map[int][]string // new GID -> servers mappings
+	Servers map[int][]string // new GID -> servers mappings
 	ClientId int64
-	SeqId    int64
+	SeqId int64
 }
 
 type JoinReply struct {
@@ -60,9 +60,9 @@ type JoinReply struct {
 }
 
 type LeaveArgs struct {
-	GIDs     []int
+	GIDs []int
 	ClientId int64
-	SeqId    int64
+	SeqId int64
 }
 
 type LeaveReply struct {
@@ -71,10 +71,10 @@ type LeaveReply struct {
 }
 
 type MoveArgs struct {
-	Shard    int
-	GID      int
+	Shard int
+	GID   int
 	ClientId int64
-	SeqId    int64
+	SeqId int64
 }
 
 type MoveReply struct {
@@ -103,26 +103,27 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+
 type Op struct {
 	// Your definitions here.
 	// Field names must start with capital letters,
 	// otherwise RPC will break.
-	Servers  map[int][]string // new GID -> servers mappings  -- for Join
-	GIDs     []int            // -- for Leave
-	Shard    int              // -- for Move
-	GID      int              // -- for Move
-	Num      int              // desired config number -- for Query
-	OpType   OperationType
+	Servers map[int][]string
+	GIDs []int
+	Shard int
+	GID int
+	Num int
+	OpType OperationType
 	ClientId int64
-	SeqId    int64
+	SeqId int64
 }
 
 type OpReply struct {
-	ControllerConfig Config
-	Err              Err
+	ControllerConfig      Config
+	Err  Err
 }
 
-type OperationType uint8
+type OperationType int
 
 const (
 	OpJoin OperationType = iota
@@ -130,6 +131,19 @@ const (
 	OpMove
 	OpQuery
 )
+
+// func getOperationType(op string) OperationType {
+// 	switch op {
+// 	case "Get":
+// 		return OpGet
+// 	case "Put":
+// 		return OpPut
+// 	case "Append":
+// 		return OpAppend
+// 	default:
+// 		panic("Invalid operation type")
+// 	}
+// }
 
 type LastOperationInfo struct {
 	SeqId int64
